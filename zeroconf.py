@@ -133,7 +133,11 @@ _TYPE_MX = 15
 _TYPE_TXT = 16
 _TYPE_AAAA = 28
 _TYPE_SRV = 33
+_TYPE_OPT = 41
 _TYPE_ANY = 255
+
+_OPTION_LEASE_UPDATE = 2
+_OPTION_OWNER = 4           # reference: https://tools.ietf.org/html/draft-cheshire-edns0-owner-option-01
 
 # Mapping constants to names
 
@@ -165,7 +169,13 @@ _TYPES = {
     _TYPE_TXT: "txt",
     _TYPE_AAAA: "quada",
     _TYPE_SRV: "srv",
+    _TYPE_OPT: "opt",
     _TYPE_ANY: "any",
+}
+
+_OPTIONS = {
+    _OPTION_LEASE_UPDATE: "le",
+    _OPTION_OWNER: "ow",
 }
 
 _HAS_A_TO_Z = re.compile(r'[A-Za-z]')
@@ -661,6 +671,31 @@ class DNSService(DNSRecord):
         return self.to_string("%s:%s" % (self.server, self.port))
 
 
+class EDNS0Record(DNSRecord):
+
+    """ Extended DNS(EDNS0) record defined in https://tools.ietf.org/html/rfc6891"""
+
+    def __init__(self, name, type_, class_, ttl, options):
+        DNSRecord.__init__(self, name, type_, class_, ttl)
+        self.options = options
+
+    def __eq__(self, other):
+        return (
+            isinstance(other, EDNS0Record)
+            and DNSEntry.__eq__(self, other)
+        )
+
+    def __repr__(self):
+        return super().to_string('options: {' + ','.join(str(_) for _ in self.options) + '}')
+
+
+class EDNS0OptionRecord():
+    def __init__(self, code, data):
+        self.code, self.data = code, data
+
+    def __repr__(self):
+        return f'option(code={self.code}): {self.data}'
+
 class DNSIncoming(QuietLogger):
 
     """Object representation of an incoming DNS packet"""
@@ -766,6 +801,21 @@ class DNSIncoming(QuietLogger):
                 )
             elif type_ == _TYPE_AAAA:
                 rec = DNSAddress(domain, type_, class_, ttl, self.read_string(16))
+            elif type_ == _TYPE_OPT:
+                def read_option():
+                    while self.offset < len(self.data):
+                        ocode, olength = self.unpack(b'!HH')
+                        if ocode == _OPTION_LEASE_UPDATE:
+                            odata = self.unpack(b'!L')
+                        elif ocode == _OPTION_OWNER:
+                            version = self.read_string(1)
+                            seq = self.read_string(1)
+                            odata = self.read_string(6)
+                        yield EDNS0OptionRecord(_OPTIONS[ocode], odata)
+                rec = EDNS0Record(
+                    domain, type_, class_, ttl,
+                    [_ for _ in read_option()]
+                )
             else:
                 # Try to ignore types we don't know about
                 # Skip the payload for the resource record so the next
